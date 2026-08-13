@@ -1,0 +1,6 @@
+# SC1091: every `source "$HERE/foo.sh"` pattern in this repo (used throughout h2-durability/
+# and resume-restart/) sources a sibling file via a runtime-computed path, which shellcheck
+# cannot statically resolve without -x (external sources), and this pre-commit hook does not
+# pass -x. This is a false positive by construction, not a real issue -- disabled repo-wide
+# rather than per-line since it recurs in essentially every multi-file script directory here.
+disable=SC1091

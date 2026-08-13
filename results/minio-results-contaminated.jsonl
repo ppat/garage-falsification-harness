@@ -1,0 +1,21 @@
+# CONTAMINATED ROWS -- quarantined 2026-08-12T19:22:34.599006Z
+# These rows were produced by run_h1_full.sh's resume-logic bug: on each of three
+# restarts after the 2026-08-12 18:58:40 du-timeout crash (manual/external restarts at
+# 18:58:56, 19:06:20, 19:17:29, 19:21:xx -- NOT genuine systemd auto-restart resuming
+# correctly), the script always re-entered its CHECKPOINTS loop at the FIRST checkpoint
+# (100000) rather than the one actually in progress (2000000). loader.py correctly
+# skipped re-writing objects (next_index already >= 100000) but its measurement phase
+# ALWAYS re-runs regardless, so it re-measured a store that already held ~2,000,000
+# objects and labelled the result "checkpoint": 100000. These rows are NOT valid
+# measurements of a 100,000-object store -- do not use them in the checkpoint table.
+# They ARE genuine evidence of a separate, real phenomenon: see RESULTS-H1-completion.md
+# "RSS is highly elastic" -- the same on-disk 2M-object store measured 1122.4, 417.9,
+# then 159.5 MiB across these three accidental re-measurements, with zero process
+# restarts (docker inspect RestartCount=0 throughout), proving Garage's RSS is
+# overwhelmingly reclaimable page cache, not a stable function of object count alone.
+# Kept for that reason, not deleted. Fixed in run_h1_full.sh's resume logic (this commit).
+{"target": "minio", "checkpoint": 100000, "ts": 1786561146.9054177, "rss_mib": 516.60546875, "list_latency": {"p50_ms": 22.52655399934156, "p90_ms": 108.90474099869607, "p99_ms": 130.43328499770723, "max_ms": 131.92830800107913, "n": 200}}
+{"target": "minio", "checkpoint": 100000, "ts": 1786561590.8850937, "rss_mib": 509.4140625, "list_latency": {"p50_ms": 9.496500999375712, "p90_ms": 105.98852400289616, "p99_ms": 127.27596100012306, "max_ms": 133.2068430056097, "n": 200}}
+{"target": "minio", "checkpoint": 100000, "ts": 1786562259.797186, "rss_mib": 508.55859375, "list_latency": {"p50_ms": 17.10805099719437, "p90_ms": 83.58317900274415, "p99_ms": 97.36808900197502, "max_ms": 139.3527360050939, "n": 200}}
+{"target": "minio", "checkpoint": 100000, "ts": 1786562485.085334, "rss_mib": 492.81640625, "list_latency": {"p50_ms": 17.62006399803795, "p90_ms": 87.02484799869126, "p99_ms": 95.80455499963136, "max_ms": 147.4136689939769, "n": 200}}
+{"target": "minio", "checkpoint": 100000, "ts": 1786562575.521301, "rss_mib": 492.92578125, "list_latency": {"p50_ms": 6.406350999895949, "p90_ms": 76.7491809965577, "p99_ms": 83.92853699479019, "max_ms": 87.74213700235123, "n": 200}}

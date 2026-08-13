@@ -1,0 +1,17 @@
+# Same as reference-driver.service, but with StartLimitIntervalSec left in [Service] -- this
+# reproduces the exact incident documented in ../../RESULTS-H1-completion.md: systemd logs
+# "Unknown key 'StartLimitIntervalSec' in section [Service], ignoring" and silently falls back
+# to its compiled default (10s / 5 restarts), instead of the intended "never rate-limit
+# restarts" behavior. Used by ../test_process_survival.sh to prove its static check can fail.
+[Unit]
+Description=Example long-running falsification driver
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/example-driver.sh
+Restart=on-failure
+RestartSec=15
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target

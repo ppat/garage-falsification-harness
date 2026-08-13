@@ -1,0 +1,173 @@
+# H4-D: does the sub-3072B inline object path actually reclaim LMDB metadata pages, and
+# reuse them, across write/expire cycles? See ../H4-INLINE-RECLAMATION.md for the full design
+# and pre-registered threshold.
+#
+# Deployed on sandbox-talos in its OWN namespace (h4d-inline-gc), distinct from the
+# `object-store` namespace already in use by the real module's chainsaw test on this cluster
+# -- that namespace is not touched by anything here.
+#
+# garage + driver run as two containers in ONE pod so the driver can read metadata_dir
+# directly off the same volume (for LMDB internals) without going through the network, and
+# so a driver crash/restart (kubelet restarts per-container, not per-pod) doesn't kill the
+# long-running Garage instance whose state this test depends on.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: h4d-inline-gc
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: garage-storage
+  namespace: h4d-inline-gc
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: h4d-results
+  namespace: h4d-inline-gc
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 256Mi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-config
+  namespace: h4d-inline-gc
+data:
+  garage.toml: |
+    metadata_dir = "/var/lib/garage/meta"
+    data_dir = "/var/lib/garage/data"
+    db_engine = "lmdb"
+    metadata_fsync = true
+    replication_factor = 1
+    rpc_bind_addr = "[::]:3901"
+    rpc_public_addr = "127.0.0.1:3901"
+    rpc_secret = "REPLACE-WITH-A-FRESH-64-HEX-CHAR-SECRET-eg-openssl-rand-hex-32"
+
+    [s3_api]
+    s3_region = "garage"
+    api_bind_addr = "[::]:3900"
+    root_domain = ".s3.garage.localhost"
+
+    [admin]
+    api_bind_addr = "[::]:3903"
+---
+# The h4d-driver-script ConfigMap (containing h4d_inline_steady_state.py) is created
+# separately at apply time via `kubectl create configmap --from-file`, not embedded here --
+# keeps the driver script a normal, lintable/editable .py file rather than an indented YAML
+# block scalar. See the "Re-running this" note in ../H4-INLINE-RECLAMATION.md.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: garage
+  namespace: h4d-inline-gc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: garage
+  template:
+    metadata:
+      labels:
+        app: garage
+    spec:
+      containers:
+      - name: garage
+        image: dxflrs/garage:v2.3.0
+        ports:
+        - containerPort: 3900
+          name: s3-api
+        - containerPort: 3901
+          name: rpc
+        - containerPort: 3903
+          name: admin
+        volumeMounts:
+        - name: config
+          mountPath: /etc/garage.toml
+          subPath: garage.toml
+        - name: garage-storage
+          mountPath: /var/lib/garage
+        readinessProbe:
+          tcpSocket:
+            port: 3900
+          initialDelaySeconds: 2
+          periodSeconds: 2
+        resources:
+          requests: { cpu: 100m, memory: 128Mi }
+          limits: { cpu: "1", memory: 512Mi }
+      - name: driver
+        image: python:3.12-slim
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+            set -e
+            pip install --quiet --root-user-action=ignore boto3 lmdb
+            exec python3 -u /scripts/h4d_inline_steady_state.py \
+            --endpoint http://127.0.0.1:3900 \
+            --meta-dir /var/lib/garage-meta-ro/meta \
+            --data-dir /var/lib/garage-meta-ro/data \
+            --lifecycle-state-file /var/lib/garage-meta-ro/meta/lifecycle_worker_state \
+            --results /results/h4d-results.json \
+            --access-key "$ACCESS_KEY" --secret-key "$SECRET_KEY" \
+            --ctrl-bucket ctrl-bucket --treat-bucket treat-bucket
+        envFrom:
+        - secretRef:
+            name: h4d-garage-creds
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: garage-storage
+          mountPath: /var/lib/garage-meta-ro
+          readOnly: true
+        - name: h4d-results
+          mountPath: /results
+        resources:
+          requests: { cpu: 50m, memory: 128Mi }
+          limits: { cpu: 500m, memory: 512Mi }
+      volumes:
+      - name: config
+        configMap:
+          name: garage-config
+      - name: garage-storage
+        persistentVolumeClaim:
+          claimName: garage-storage
+      - name: scripts
+        configMap:
+          name: h4d-driver-script
+      - name: h4d-results
+        persistentVolumeClaim:
+          claimName: h4d-results
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage
+  namespace: h4d-inline-gc
+spec:
+  selector:
+    app: garage
+  ports:
+  - name: s3-api
+    port: 3900
+    targetPort: 3900
+  - name: rpc
+    port: 3901
+    targetPort: 3901
+  - name: admin
+    port: 3903
+    targetPort: 3903

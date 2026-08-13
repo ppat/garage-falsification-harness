@@ -1,0 +1,46 @@
+---
+# yamllint disable rule:line-length
+name: test-resume-restart
+
+# resume-restart/ is the one part of this harness that doesn't need the Docker VM or
+# sandbox-talos -- it's a self-contained regression suite for the resume/restart failure
+# modes documented in resume-restart/README.md, fast enough (a few seconds) to run on every
+# PR. The H-tests themselves (h1-*/ through h6-*/) are not CI'd: see the top-level README's
+# "CI" section for why.
+
+on:
+  pull_request:
+    paths:
+    - resume-restart/**
+    - .github/workflows/test-resume-restart.yaml
+  push:
+    branches: [main]
+    paths:
+    - resume-restart/**
+    - .github/workflows/test-resume-restart.yaml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  resume-restart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+    - name: run resume-restart test suite
+      run: |
+        set -euo pipefail
+        cd resume-restart
+        status=0
+        for t in test_*.sh; do
+        echo "::group::$t"
+        bash "$t" || status=1
+        echo "::endgroup::"
+        done
+        exit "$status"

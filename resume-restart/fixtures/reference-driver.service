@@ -1,0 +1,17 @@
+# Reference systemd unit shape, matching h1-garage-falsification.service as documented in
+# ../../RESULTS-H1-completion.md ("Also fixed: the unit file's StartLimitIntervalSec=0 was in
+# the wrong section... moved to [Unit]"). Used by ../test_process_survival.sh's static check
+# as the known-good fixture; fixtures/reference-driver-buggy.service is the same unit with
+# that one directive moved back to [Service], to prove the check can fail.
+[Unit]
+Description=Example long-running falsification driver
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/example-driver.sh
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
