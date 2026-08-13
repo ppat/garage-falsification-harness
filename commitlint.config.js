@@ -35,7 +35,8 @@ module.exports = {
       [
         '',
         'dev-tools',
-        'github-actions'
+        'github-actions',
+        'migration'
       ]
     ],
 
