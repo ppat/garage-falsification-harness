@@ -1,0 +1,21 @@
+# CONTAMINATED ROWS -- quarantined 2026-08-12T19:22:34.599006Z
+# These rows were produced by run_h1_full.sh's resume-logic bug: on each of three
+# restarts after the 2026-08-12 18:58:40 du-timeout crash (manual/external restarts at
+# 18:58:56, 19:06:20, 19:17:29, 19:21:xx -- NOT genuine systemd auto-restart resuming
+# correctly), the script always re-entered its CHECKPOINTS loop at the FIRST checkpoint
+# (100000) rather than the one actually in progress (2000000). loader.py correctly
+# skipped re-writing objects (next_index already >= 100000) but its measurement phase
+# ALWAYS re-runs regardless, so it re-measured a store that already held ~2,000,000
+# objects and labelled the result "checkpoint": 100000. These rows are NOT valid
+# measurements of a 100,000-object store -- do not use them in the checkpoint table.
+# They ARE genuine evidence of a separate, real phenomenon: see RESULTS-H1-completion.md
+# "RSS is highly elastic" -- the same on-disk 2M-object store measured 1122.4, 417.9,
+# then 159.5 MiB across these three accidental re-measurements, with zero process
+# restarts (docker inspect RestartCount=0 throughout), proving Garage's RSS is
+# overwhelmingly reclaimable page cache, not a stable function of object count alone.
+# Kept for that reason, not deleted. Fixed in run_h1_full.sh's resume logic (this commit).
+{"target": "garage", "checkpoint": 100000, "ts": 1786561149.7498858, "rss_mib": 1122.38671875, "list_latency": {"p50_ms": 26.5477840002859, "p90_ms": 94.60355100600282, "p99_ms": 207.05350099888165, "max_ms": 300.149782000517, "n": 200}}
+{"target": "garage", "checkpoint": 100000, "ts": 1786561594.1742291, "rss_mib": 417.91015625, "list_latency": {"p50_ms": 24.049457999353763, "p90_ms": 111.0712700028671, "p99_ms": 250.61852199723944, "max_ms": 268.6787999991793, "n": 200}}
+{"target": "garage", "checkpoint": 100000, "ts": 1786562261.2384546, "rss_mib": 159.515625, "list_latency": {"p50_ms": 19.55106099921977, "p90_ms": 80.14644999639131, "p99_ms": 161.0795840024366, "max_ms": 197.20058699749643, "n": 200}}
+{"target": "garage", "checkpoint": 100000, "ts": 1786562486.7458675, "rss_mib": 29.94140625, "list_latency": {"p50_ms": 19.064132997300476, "p90_ms": 93.41141999902902, "p99_ms": 169.44007900019642, "max_ms": 170.15367100248113, "n": 200}}
+{"target": "garage", "checkpoint": 100000, "ts": 1786562575.4620492, "rss_mib": 59.5234375, "list_latency": {"p50_ms": 16.74755199928768, "p90_ms": 58.26366799738025, "p99_ms": 64.91329299751669, "max_ms": 71.92973099881783, "n": 200}}

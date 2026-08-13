@@ -1,0 +1,28 @@
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "lmdb"
+# metadata_fsync=true matches the production module's config
+# (infrastructure/subsystems/storage-core/garage/conf.d/garage.toml in
+# ppat/homelab-ops-kubernetes-apps -- a plain Deployment, not an operator-managed CRD; the
+# garage-operator/GarageCluster design this harness originally measured against was dropped,
+# see this repo's top-level README "Provenance") -- durability-over-throughput, set
+# explicitly because Garage's own default is off. H1 measures RSS/LIST cost at the config
+# production actually runs, not Garage's cheapest-possible default.
+metadata_fsync = true
+
+replication_factor = 1  # single node, matches the sandbox-talos target topology being evaluated
+compression_level = 1
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+rpc_secret = "REPLACE-WITH-A-FRESH-64-HEX-CHAR-SECRET-eg-openssl-rand-hex-32"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+root_domain = ".s3.garage.localhost"
+
+[admin]
+api_bind_addr = "[::]:3903"
+metrics_token = "h1falsify-metrics-token"
+admin_token = "h1falsify-admin-token"
