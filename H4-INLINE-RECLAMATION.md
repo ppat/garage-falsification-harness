@@ -1,12 +1,16 @@
 # H4-D — does the sub-3072B inline path actually reclaim, or just never grow visibly?
 
-**Status: PENDING.** The treatment arm's verdict was due ~2026-08-14T16:00Z and had not
-landed as of this repo's move from `ppat/homelab-ops-kubernetes-apps`. **When the verdict
-lands, update this file's "Interim status" section in place (add a dated entry, most-recent-
-first, per that section's own convention) and update the H4-D row in `RESULTS.md`'s verdict
-summary and its "H4-D" section.** Do not move the pre-registered thresholds below to fit
-whatever the result turns out to be — they were fixed before any data existed specifically so
-they couldn't be.
+**Status: LANDED — FAIL.** The treatment arm's verdict was due at `cycle2_wait_deadline`
+(**2026-08-14T16:54:40Z**, not the ~16:00Z originally estimated in this file and in
+`RESULTS.md` before the exact deadline was known) and landed with `ratio_du = 2.437`,
+`ratio_pgno = 2.437` — above the pre-registered **FAIL** threshold (`≥1.75×`) and above the
+control arm's own 1.967 (the cost of retaining everything with no expiry at all). See
+"Interim status" below for the full numbers and "The governing rule" section — unchanged by
+this landing — for why the control arm's `DETECTOR-OK` result is what makes this trustworthy.
+**A confirmatory third write cycle (Cycle 3, run 2026-08-14T22:34–22:36Z) settles the one
+question the original two cycles left open — whether the failure is bounded or compounds
+per-cycle — without changing the verdict**: `Δ3 = 0` pages, `0` bytes, exactly, falsifying
+unbounded per-cycle growth cleanly. See the dated entry below.
 
 This was a follow-up to H4, not a revision of it — a new, self-contained sub-experiment
 closing the specific gap the corrected H4 left open. (Historical note: at the time this file
@@ -166,6 +170,158 @@ CRD this was originally written against was dropped, see this repo's top-level R
   carry the same `SNAPSHOT[...]`/`SUMMARY ...verdict=` lines used throughout this harness.
 
 ## Interim status (updated as the run progresses — most recent entry first)
+
+### 2026-08-14T22:35:44Z — Cycle 3: bounded-vs-unbounded question settled, verdict unchanged
+
+**Why this run happened**: the FAIL verdict below was already conclusive against the
+pre-registered threshold — nothing here revises it. What the two-cycle result could not
+distinguish was *shape*. Cycle 1's dead population sat in `object:gc_todo_v2` for a full
+`TABLE_GC_DELAY`, then drained sometime in the ~25h settle window, during which
+`metadata_dir` grew by only `+24` pages / `+98,304` bytes. That is small enough to be
+consistent with two different stories: (a) the freed pages were reused almost completely and
+that tiny residual is ordinary LMDB bookkeeping overhead, or (b) a slow staircase where a
+small amount of dead weight accumulates every cycle and would compound over many more
+cycles. One cycle's data point could not tell those apart. A third cycle can.
+
+**Preconditions, verified live, matched the documented end-of-run state to the byte before
+any write was issued** (the run script aborts with no writes on any mismatch — it did not
+abort): `object:table = 60,000`, `object:gc_todo_v2 = 0`, `version:gc_todo_v2 = 0`,
+`last_pgno = 35,991`, `metadata_du_bytes = 147,557,714`.
+
+**Method, identical to cycles 1–2 by construction**: the driver's own `lmdb_snapshot()`,
+`du_bytes()`, and `put_distinct()` functions (same `lmdb.open(..., readonly=True, lock=False,
+max_dbs=64, subdir=True)` → `env.info()["last_pgno"]`; same `du -sb`; same
+`boto3.put_object` with `os.urandom(512)` bodies) were copied verbatim into a standalone
+script, run from a short-lived helper pod mounting the same `garage-storage` PVC — RWO on a
+single node permits a second reader/writer pod as long as it doesn't run concurrently with
+the driver's own writes, which it didn't. Same `python:3.12-slim` image. 20,000 more distinct
+512 B objects were written to `treat-bucket`, prefix `cycle3/` (a new prefix, so this
+population is disjoint from cycles 1–2's `expire-me/`-prefixed keys and nothing here was
+expired).
+
+**Two predictions, fixed before the write**: **bounded high-water mark → `Δ3 ≈ 0`**
+(everything a fresh 20,000×512B population needs fits inside pages already freed by cycle
+1's drained tombstones); **per-cycle growth → `Δ3 ≈ 8,000`** pages (matching `Δ1`'s magnitude
+— the cost of one fresh, unreused population, since `Δ1 = 8,164` pages for the same
+20,000×512B write against an empty baseline).
+
+**Result: `Δ3 = 0` pages, `0` bytes — exactly.** `last_pgno`: 35,991 → 35,991.
+`metadata_du_bytes`: 147,557,714 → 147,557,714, unchanged to the byte. The two predictions
+were ~8,000 pages apart; the observed value lands exactly on the bounded prediction, not
+partway between the two. This is a clean falsification of the per-cycle-growth prediction —
+no threshold judgement call is needed, unlike the `Δ2` verdict above.
+
+**Corroboration that this is real reuse, not a silent no-op**: over the same write,
+`object:table` rose 60,000 → 80,000 and `object:merkle_tree` rose 71,232 → 96,985 — the
+20,000 PUTs demonstrably landed as real LMDB rows (confirmed directly from the same
+per-named-database entry counts used throughout this file, not inferred from the S3 API
+returning success). So a full population's worth of new writes was absorbed with zero net
+`last_pgno` growth, by **a separate transaction that had never touched cycle 1's freed pages
+before** — a materially stronger result than the `+24`-page residual after the drain window
+already suggested, which only showed reuse *within* whatever transaction(s) performed that
+maintenance.
+
+**This settles the question the two-cycle result left open, rather than adding to it**:
+freed LMDB pages are reused by later, independent write transactions, not just within the
+transaction that frees them. The pattern this run establishes is a **bounded step to a new,
+larger high-water mark that then holds** — not an unbounded staircase that climbs every
+cycle. The FAIL verdict stands exactly as landed: expiry still does not shrink `metadata_dir`,
+`Δ2` is still real and still breaches the pre-registered `≥1.75×` line. What changes is that
+this is now known to be bounded bad news, not compounding bad news.
+
+**What this does not touch**: Garage's own documented upstream issue on LMDB *snapshot*
+bloat — `git.deuxfleurs.fr/Deuxfleurs/garage#1006` ("On LMDB compaction"): a real,
+independently-reported case of a 146 GB LMDB metadata *snapshot* file holding ~4 GB of live
+data (~37×), compacted down to 3.9 GB with `mdb_copy -c`. That issue's own account attributes
+the bloat to Garage's periodic snapshot mechanism producing uncompacted copies over time — a
+different mechanism from anything cycles 1–3 exercised here, since no snapshot operation was
+triggered in this test at any point. Cycle 3 shows freed pages in the *live* database are
+reused by later transactions; it says nothing about whether a *snapshot* copy of that
+database compacts as it accumulates writes. That remains a separate, open risk, unaddressed
+by this result.
+
+**Raw artifacts**: `h4d-cycle3.log`, `h4d-cycle3-results.json`, and
+`h4d_cycle3_script_used.py` (the standalone script described above). The original
+`h4d_inline_steady_state.py` driver and its `/results/h4d-results.json` were not modified —
+this was a separate, read-preconditions-then-write run against the same live Garage
+instance, not a resumption of the original driver.
+
+---
+
+### 2026-08-14T16:54:43Z — treatment arm complete, verdict FAIL
+
+**Final snapshot (`treat_cycle2_final`) taken 2026-08-14T16:54:43.618Z, ~3s after
+`cycle2_wait_deadline` (2026-08-14T16:54:40.126Z) elapsed.** The driver container's ongoing
+crash loop is now fully explained and confirmed benign, not just presumed so: it resumes from
+`/results/h4d-results.json` with `phase=done`; every phase gate it checks on resume is already
+satisfied, so it re-executes no work; it re-prints the same `PHASE -> ...` transition log and
+`SUMMARY ...` line (with the *current* wall-clock time stamped on each line, not the original
+event time) and then **exits 0**; `restartPolicy: Always` restarts it, and the cycle repeats.
+Confirmed by pulling the container's logs directly at two different points after this
+verdict landed — identical content both times, differing only in the replayed timestamps. So
+a "`phase -> done`" line's own timestamp is never a reliable completion time; the
+`results.json` snapshot timestamps and `cycle2_wait_deadline` above are the trustworthy
+anchors for when the run actually finished, and the crash loop itself mutates nothing.
+
+**Full treatment-arm snapshot series**:
+
+| snapshot | list keys (`expire-me/`) | `metadata_dir` du | `last_pgno` | timestamp |
+| --- | --- | --- | --- | --- |
+| baseline | 0 | 66,071,890 B | 16,097 | 2026-08-12T14:51:36Z |
+| cycle 1 write (+20,000) | 20,000 | 99,511,634 B | 24,261 | 2026-08-12T14:53:06Z |
+| cycle 1 after GC wait | **0** | 114,802,002 B | 27,994 | 2026-08-13T15:53:09Z |
+| cycle 2 write (+20,000 more) | 20,000 | 147,459,410 B | 35,967 | 2026-08-13T15:54:40Z |
+| cycle 2 final (after settle wait) | 20,000 | 147,557,714 B | 35,991 | 2026-08-14T16:54:43Z |
+
+`Δ1 = 99,511,634 − 66,071,890 = 33,439,744 B` (`last_pgno` Δ1 = 24,261 − 16,097 = 8,164).
+`Δ2 = 147,557,714 − 66,071,890 = 81,485,824 B` (`last_pgno` Δ2 = 35,991 − 16,097 = 19,894).
+
+**`ratio_du = 2.437`, `ratio_pgno = 2.437`** (both metrics agree exactly, as designed).
+Against the pre-registered thresholds (`PASS ≤1.25×`, `FAIL ≥1.75×`): **FAIL**, and not a
+borderline one — 2.437 is *above* the control arm's own 1.967 (the cost of two live
+populations with **zero** expiry ever attempted). Expiring the first population did not merely
+fail to reclaim its space; the treatment arm ended up more expensive than the "never delete
+anything" baseline.
+
+**`cycle1_object_count_zero = true` is the load-bearing fact that rules out "expiry never
+fired"**: `list keys` genuinely dropped from 20,000 to 0 after the cycle-1 wait — the objects
+left the bucket listing. `object:gc_todo_v2` and `version:gc_todo_v2` (read directly from the
+LMDB named databases at each snapshot) went from 0 (before the rule) to 20,000 each
+immediately after the cycle-1 wait, confirming the metadata layer queued every one of them for
+tombstone GC. So this is not a repeat of the original H4's void fail-first (`du_bytes > 0`
+before anything ran) — the deletion pipeline demonstrably executed, and the metadata footprint
+grew anyway.
+
+**A further data point from the raw snapshots, not part of the pass/fail measurement**:
+`object:gc_todo_v2` and `version:gc_todo_v2` were still sitting at 20,000 each at the
+cycle-2-write snapshot (2026-08-13T15:54:40Z) — a full `TABLE_GC_DELAY` (86400s) had elapsed
+since the rule was applied, but the queue had not yet drained. By the final snapshot
+(2026-08-14T16:54:43Z, ~25h after cycle-2-write), both counters had reached 0 and
+`object:table` had dropped back from 80,000 to 60,000 (cycle 1's rows were genuinely removed
+from the table), while `metadata_dir` grew by only `+98,304` B and `last_pgno` by only `+24`
+pages over that same ~25h. **Cycle 3 (see the dated entry above) settles what that small
+residual delta meant**: freed pages are reused in full by later, independent write
+transactions, not merely within whatever transaction performed the drain — a bounded step to
+a new high-water mark, not an unbounded staircase. The pre-registered `Δ1`/`Δ2` verdict below
+is unaffected either way; this is what closes the interpretation question, not what decides
+the verdict.
+
+**`data_dir` stayed at 64 B across every snapshot in both arms** (`data_dir_stayed_flat =
+true`), confirming every object in this test took the inline path, never the block path — this
+result says nothing about the block-storage path, which H4/H4-B already showed reclaims
+correctly (~602–632s).
+
+**What this does not license** (see `RESULTS.md`'s H4-D section and "Known blind spots" for
+the full statement): this is a metadata growth-rate measurement under a synthetic two-cycle
+workload at 20,000×512B objects, not a production projection. H4 tested and passed on the
+block-storage path with 1 MiB objects — this result does not touch that finding. Whether this
+growth pattern is survivable against a 16Gi `metadata_dir` at production's actual object-size
+mix and write rate is a separate calculation this file does not perform.
+
+**`SUMMARY test=h4d-inline-steady-state verdict=FAIL ratio_du=2.437 ratio_pgno=2.437
+cycle1_count_zero=True threshold_pass<=1.25 threshold_fail>=1.75`**
+
+---
 
 ### 2026-08-12T14:54Z — control arm (fail-first) complete; treatment cycle 1 running, ~25h wait in progress
 

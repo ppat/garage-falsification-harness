@@ -106,9 +106,8 @@ positive and negative controls alongside the real check, explicit `SKIP` kept di
   fail-first and real results reported side by side.
 - `RESULTS-H1-completion.md` — H1's full completion run in detail (checkpoint table, the
   re-cut criteria, incidents hit and fixed along the way).
-- `H4-INLINE-RECLAMATION.md` — H4-D's pre-registered design and live status; its verdict is
-  still pending as of this repo's creation (due ~2026-08-14T16:00Z) and will be filled in here
-  and in `RESULTS.md` once it lands.
+- `H4-INLINE-RECLAMATION.md` — H4-D's pre-registered design and landed result (verdict FAIL,
+  landed 2026-08-14T16:54:43Z).
 
 `results/h2-hardreset.jsonl` has three Garage access-key IDs (`GK...` strings, from
 ephemeral `tmpfs-loop` test cells — that substrate is destroyed by design on every hard reset,
@@ -309,10 +308,18 @@ path. 95.4% of production objects are sub-1KB and stored inline in LMDB with no 
 `du` on `data_dir` is structurally blind to that majority even when reclamation works
 correctly. Two-cycle steady-state design: write, expire, wait past `TABLE_GC_DELAY` (24h),
 write again without expiring, wait again, compare `metadata_dir` growth and LMDB `last_pgno`
-between cycles. **Pre-registered thresholds**: PASS if cycle-2 growth ≤1.25× cycle-1; ≥1.75× is
-the explicit never-reclaimed failure mode. **Fail-first (the control arm itself)**: proven,
-ratio 1.967 against a theoretical 2.0 for two never-reclaimable populations. **Status: PENDING**
-— see `H4-INLINE-RECLAMATION.md`.
+between cycles. **Pre-registered thresholds** (fixed on
+[`ppat/homelab-ops-kubernetes-apps#3611`](https://github.com/ppat/homelab-ops-kubernetes-apps/issues/3611)
+before any deciding data existed): PASS if cycle-2 growth ≤1.25× cycle-1; ≥1.75× is the
+explicit never-reclaimed failure mode. **Fail-first (the control arm itself)**: proven, ratio
+1.967 against a theoretical 2.0 for two never-reclaimable populations. **Status: LANDED —
+FAIL.** Treatment ratio 2.437 on both `du` and `last_pgno` — above the ≥1.75× fail line and
+above the no-expiry control's own 1.967. A confirmatory third write cycle settles the shape
+of that failure: `Δ3 = 0` pages/bytes exactly, against pre-registered predictions of `≈0`
+(bounded high-water mark) vs. `≈8,000` (unbounded per-cycle growth) — bounded, not unbounded,
+and the FAIL verdict is unchanged. Specific to the inline path (1 MiB objects on the block
+path reclaim correctly, see H4); not a production projection — see `RESULTS.md`'s H4-D
+section and `H4-INLINE-RECLAMATION.md` for the full result and its limits.
 
 ### H5 — Longhorn backup restore round-trip
 

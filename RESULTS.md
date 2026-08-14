@@ -11,7 +11,7 @@ alongside the real result for every test that has one. Raw data in `results/`.
 | H2 — unclean-shutdown durability | **NOT KILLED (pilot scale)** | 5/25 hard-reset iterations, 8/25 kill-9 iterations; H1-instance data-loss confound investigated, most plausible alternative ruled out (not independently reproduced) |
 | H3 — ListObjectsV2 `db//` | **NOT KILLED — original finding was a test artifact, reversed on correction** | Raw API retest confirmed on both backends: Garage self-consistent, MinIO write-rejects; CNPG e2e still not reached |
 | H4 — Expiration reclaims space | **VOID (original) → REFUTED ON RETEST** | `du` reclaims at ~602–632s once the fail-first and object-dedup defects are fixed; block-storage path only, see H4-D |
-| H4-D — inline path steady-state reclamation | **PENDING** | Control arm (fail-first) proven, ratio 1.967 vs theoretical 2.0; treatment arm verdict due ~2026-08-14T16:00Z |
+| H4-D — inline path steady-state reclamation | **FAIL** | Treatment ratio 2.437 (control 1.967, theoretical no-reuse 2.0); ≥1.75× fail threshold breached on both `du` and `last_pgno`; confirmatory cycle 3 shows the failure is a bounded step to a new high-water mark, not unbounded per-cycle growth; see limitations below |
 | H5 — Longhorn restore | **SKIPPED** | Real infra blocker, documented, not worked around |
 | H6 — Terraform 1.6.6 backend | **PASSED** | Full pre-registered flow, clean |
 
@@ -26,11 +26,18 @@ alongside the real result for every test that has one. Raw data in `results/`.
   **exactly 0 bytes**, while 200 × 1 MiB objects grew it by 209,722,600 B. H4 and its retest
   both used 1 MiB objects exclusively — neither says anything about whether the dominant,
   sub-inline-threshold object shape ever reclaims. **H4-D, a dedicated two-cycle steady-state
-  test for exactly this gap, is running now** — see `H4-INLINE-RECLAMATION.md` and the H4-D
-  section below for its pre-registered design and PENDING verdict slot. `du` on `data_dir` is
-  structurally the wrong instrument for this majority: LMDB does not return freed pages to the
-  filesystem, so `du` will not shrink there even when reclamation is working correctly;
-  H4-D measures `metadata_dir` growth rate and LMDB `last_pgno` instead.
+  test for exactly this gap, has landed with a FAIL verdict** — see `H4-INLINE-RECLAMATION.md`
+  and the H4-D section below for its pre-registered design and full result. `du` on `data_dir`
+  is structurally the wrong instrument for this majority: LMDB does not return freed pages to
+  the filesystem, so `du` will not shrink there even when reclamation is working correctly;
+  H4-D measures `metadata_dir` growth rate and LMDB `last_pgno` instead — and on those
+  instruments, the inline path's metadata footprint grew **faster** across two write/expire
+  cycles than it did with no expiry attempted at all (ratio 2.437 vs. the no-expiry control's
+  1.967). This is now a **known, landed finding, not an open gap**: reclamation on the block
+  path (H4/H4-B) does not extend to the inline path, which is where 95.4% of this estate's
+  objects live. A confirmatory third write cycle (Cycle 3, see H4-D section below) further
+  settles the *shape* of that failure: it is a bounded one-time step to a new, larger
+  high-water mark, not unbounded growth that compounds every cycle.
 - **A pre-registered kill criterion (H4) fired, then was invalidated by defects in the test
   itself, not by new evidence about Garage.** That sequence, not the retest's eventual RECLAIMED
   result, is the most instructive part of this run — see "The standing rule this harness is
@@ -416,36 +423,121 @@ defects in the original test are fixed and the wait respects Garage's real GC de
 
 ## H4-D — the sub-3072B inline path: does it reclaim, or does it just never grow visibly?
 
-**Status: PENDING — verdict not yet landed.** Full pre-registered design (written before any
-data was collected, timestamped 2026-08-12T14:42:01Z), interim status, and the read commands
-for the live result are in `H4-INLINE-RECLAMATION.md`. Summary of the design, since it's easy
-to lose in the move: two arms on the same Garage instance — a **control** (write 20,000
-distinct 512 B objects, measure, write 20,000 more, never expire anything, measure again — this
-*is* the fail-first, not a separate throwaway check) and a **treatment** (write, expire via a
+**Status: LANDED — FAIL.** Full pre-registered design (written before any data was collected,
+timestamped 2026-08-12T14:42:01Z, and — critically for this verdict's credibility — **the
+pass/fail thresholds below were pre-registered on
+[`ppat/homelab-ops-kubernetes-apps#3611`](https://github.com/ppat/homelab-ops-kubernetes-apps/issues/3611)
+before any deciding data existed**, so there is nothing to relitigate now that a result has
+landed), full interim record, and raw read commands are in `H4-INLINE-RECLAMATION.md`. Summary
+of the design: two arms on the same Garage instance — a **control** (write 20,000 distinct
+512 B objects, measure, write 20,000 more, never expire anything, measure again — this *is*
+the fail-first, not a separate throwaway check) and a **treatment** (write, expire via a
 lifecycle rule, wait past `TABLE_GC_DELAY` [24h], write a second population, wait again,
 measure). Metrics: `metadata_dir` size (`du -sb`) and LMDB `last_pgno`, both compared as
 `Δ2 = metadata_size(after cycle 2) − metadata_size(baseline)` against
 `Δ1 = metadata_size(after cycle 1) − metadata_size(baseline)`.
 
-**Pre-registered thresholds (fixed before any data existed — do not move them now that a
-result exists)**: **PASS if `Δ2 ≤ 1.25 × Δ1`** on both `du` and `last_pgno` (full internal
-reuse predicts `Δ2 ≈ Δ1`); **`Δ2 ≥ 1.75 × Δ1`** on either metric is the explicit MinIO-shaped
-failure mode (space consumed by logically-gone data), close enough to the no-reuse prediction
-(`Δ2 ≈ 2 × Δ1`) that it isn't measurement noise.
+**Pre-registered thresholds (fixed before any data existed)**: **PASS if `Δ2 ≤ 1.25 × Δ1`** on
+both `du` and `last_pgno` (full internal reuse predicts `Δ2 ≈ Δ1`); **`Δ2 ≥ 1.75 × Δ1`** on
+either metric is the explicit MinIO-shaped failure mode (space consumed by logically-gone
+data), close enough to the no-reuse prediction (`Δ2 ≈ 2 × Δ1`) that it isn't measurement noise.
 
-**Control arm (fail-first) result, already landed and proven**: `ratio_du = 1.967`,
-`ratio_pgno = 1.967`, both within 2% of the theoretical 2.0 for two live, never-reclaimable
-populations. `verdict=DETECTOR-OK` — the probe can see real growth, so the treatment arm's
-eventual result is trustworthy rather than void-by-construction the way the original H4's
-fail-first was.
+**Control arm (fail-first) result — proven**: `ratio_du = 1.967`, `ratio_pgno = 1.967`, both
+within 2% of the theoretical 2.0 for two live, never-reclaimable populations (nothing was ever
+expired in this arm, so this is what "zero reclamation whatsoever" looks like on this probe).
+`verdict=DETECTOR-OK` — the probe can see real growth, which is what makes the treatment arm's
+result trustworthy rather than void-by-construction the way the original H4's fail-first was.
 
-**Treatment arm**: was in `treatment-cycle1-waiting` as of this repo's move, cycle-1 wait
-clearing ~2026-08-13T15:53Z, cycle-2 wait clearing and the final verdict landing
-**~2026-08-14T16:00Z**. This section will be updated in place with the verdict once it lands —
-see `H4-INLINE-RECLAMATION.md`'s "Interim status" for the live read command and the fullest
-current account. Do not treat the control arm's PASS as evidence about the treatment arm's
-result; they test different things (that the probe can see growth at all, vs. that reclamation
-actually happens).
+**Treatment arm result — FAIL, worse than the no-expiry control**: `ratio_du = 2.437`,
+`ratio_pgno = 2.437` (both metrics agree, as the pre-registered design required for a
+conclusive read). This is above the pre-registered `≥1.75×` FAIL line, and above the control
+arm's own 1.967 — i.e. **expiring the first population left `metadata_dir` larger than never
+expiring it at all**, not merely failing to shrink it back down.
+
+| snapshot | list keys | `metadata_dir` du | `last_pgno` | timestamp (UTC) |
+| --- | --- | --- | --- | --- |
+| baseline | 0 | 66,071,890 B | 16,097 | 2026-08-12T14:51:36 |
+| cycle 1 write (+20,000) | 20,000 | 99,511,634 B | 24,261 | 2026-08-12T14:53:06 |
+| cycle 1 after GC wait | **0** | 114,802,002 B | 27,994 | 2026-08-13T15:53:09 |
+| cycle 2 write (+20,000 more) | 20,000 | 147,459,410 B | 35,967 | 2026-08-13T15:54:40 |
+| cycle 2 final (verdict) | 20,000 | 147,557,714 B | 35,991 | 2026-08-14T16:54:43 |
+
+`Δ1 = 33,439,744 B` / `8,164` pages; `Δ2 = 81,485,824 B` / `19,894` pages.
+`cycle1_object_count_zero = true` — the cycle-1 population genuinely left the bucket listing
+(list keys 20,000 → 0), and the LMDB `object:gc_todo_v2`/`version:gc_todo_v2` named databases
+went from 0 to 20,000 entries each immediately after, confirming the metadata layer queued
+every object for tombstone GC. **This is not a repeat of the original H4's void fail-first**
+(`du_bytes > 0` before anything ran, true by construction): here the deletion pipeline
+demonstrably fired and the objects vanished from the listing, and `metadata_dir` grew anyway.
+`data_dir` stayed at 64 B across every snapshot in both arms, confirming all objects took the
+inline path, never the block path. Full per-table LMDB entry counts, including the later
+window where the `gc_todo_v2` queue itself eventually drained without shrinking
+`metadata_dir` or `last_pgno` measurably, are in `H4-INLINE-RECLAMATION.md`'s landed-verdict
+entry.
+
+`SUMMARY test=h4d-inline-steady-state verdict=FAIL ratio_du=2.437 ratio_pgno=2.437
+cycle1_count_zero=True threshold_pass<=1.25 threshold_fail>=1.75`
+
+### Cycle 3 — confirmatory follow-up, settles bounded-vs-unbounded (verdict unchanged)
+
+The FAIL verdict above was already conclusive against the pre-registered threshold. What it
+left unresolved was *shape*: the ~25h window in which cycle 1's `gc_todo_v2` queue drained
+added only `+24` pages / `+98,304` bytes — small enough to be consistent with either "nearly
+fully reused" or "the start of a slow staircase that keeps climbing." A third write cycle,
+run after this verdict landed, resolves that directly rather than leaving it inferred.
+
+**Method**: same measurement functions as cycles 1–2 (`lmdb_snapshot()`, `du_bytes()`,
+`put_distinct()`, copied verbatim from the driver script), run from a short-lived helper pod
+against the same `garage-storage` PVC. Preconditions were checked live and matched the
+documented end-of-run state to the byte before any write: `object:table=60,000`,
+`object:gc_todo_v2=0`, `version:gc_todo_v2=0`, `last_pgno=35,991`,
+`metadata_du_bytes=147,557,714`. Two predictions were fixed before writing: **bounded
+high-water mark → `Δ3 ≈ 0`**; **per-cycle growth → `Δ3 ≈ 8,000`** (matching `Δ1`'s
+magnitude for the same 20,000×512B population size). 20,000 more distinct objects were then
+written to `treat-bucket` (prefix `cycle3/`).
+
+**Result: `Δ3 = 0` pages, `0` bytes, exactly** — `last_pgno` 35,991 → 35,991,
+`metadata_du_bytes` 147,557,714 → 147,557,714, unchanged to the byte. This falsifies the
+per-cycle-growth prediction cleanly; the two predictions were ~8,000 pages apart and the
+observed value lands exactly on the bounded prediction, not in between.
+
+**Corroboration that this is real reuse, not a silent no-op**: `object:table` rose
+60,000 → 80,000 and `object:merkle_tree` rose 71,232 → 96,985 over the same write — the
+20,000 PUTs demonstrably landed as real LMDB rows. So a full population's worth of new writes
+was absorbed with zero net page allocation, by **a separate transaction that had never
+touched cycle 1's freed pages before** — a materially stronger result than the within-window
+reuse the ~25h drain already suggested.
+
+**Interpretation, not verdict, changes**: expiry still does not shrink `metadata_dir` — `Δ2`
+(81,485,824 B / 19,894 pages) is still real and still breaches the pre-registered `≥1.75×`
+line on data that existed when the threshold was fixed. What cycle 3 adds is that this is a
+**bounded step to a new, larger high-water mark that then holds**, not an unbounded staircase
+that keeps climbing every cycle. Full method, raw numbers, and the upstream-issue caveat this
+does *not* resolve are in `H4-INLINE-RECLAMATION.md`'s landed-verdict entry.
+
+**What this does and does not license**:
+
+- This is specific to objects stored **inline** in LMDB (under Garage's 3072 B threshold).
+  H4/H4-B already showed the **block**-storage path reclaims correctly with 1 MiB objects
+  (~602–632s). This result does not revise that finding — it closes the separate gap H4/H4-B
+  explicitly left open.
+- This measures `metadata_dir` growth *rate* across three cycles of a synthetic 20,000×512B
+  workload. **It is not a production projection.** Production is 95.4% sub-1KB objects at
+  roughly 3,095 objects/day against 3.44M live objects, and what a bounded-but-real jump to a
+  higher high-water mark implies for a 16Gi `metadata_dir` over realistic timescales is a
+  separate calculation this document does not perform — do not read a migration-level
+  conclusion into this result beyond what is stated here.
+- The control arm's 1.967 (vs. a theoretical 2.0 for zero reclamation) is what "no reclamation
+  at all" looks like on this probe; the treatment arm landing *above* that number is why this
+  reads as "expiry adds overhead" rather than merely "expiry doesn't help."
+- Cycle 3 does not touch, and is not evidence about, Garage's separate documented upstream
+  issue on LMDB *snapshot* bloat (see `H4-INLINE-RECLAMATION.md`) — no snapshot operation was
+  exercised here.
+
+Do not treat the control arm's `DETECTOR-OK` as evidence about the treatment arm's own result;
+they test different things (that the probe can see growth at all, vs. that reclamation
+actually happens) — but the control result is what forecloses the "maybe the probe is just
+insensitive" objection to the treatment's FAIL.
 
 ---
 
