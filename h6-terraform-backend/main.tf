@@ -2,7 +2,7 @@ terraform {
   # 1.6.6 pinned deliberately -- the last MPL-licensed release, and the version pinned
   # elsewhere in this estate. This is what has to move off MinIO before it can be
   # decommissioned, so it's the exact binary under test, not "a recent Terraform".
-  required_version = "= 1.6.6"
+  required_version = "1.15.8"
 
   required_providers {
     local  = { source = "hashicorp/local", version = "~> 2.4" }
